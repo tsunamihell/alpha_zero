@@ -9,3 +9,6 @@ Pillow==9.5.0
 matplotlib==3.6.2
 pandas==1.5.3
 chess==1.11.2
+mss>=10.0.0
+opencv-python>=4.8.0
+pyautogui>=0.9.54
