@@ -51,6 +51,7 @@ from typing import Callable, Tuple, Mapping, Iterable, Any
 import numpy as np
 
 from alpha_zero.envs.base import BoardGameEnv
+from alpha_zero.core.mcts_utils import sample_move, validate_search_count
 
 
 class DummyNode(object):
@@ -253,13 +254,19 @@ def add_dirichlet_noise(node: Node, legal_actions: np.ndarray, eps: float = 0.25
         raise ValueError('Expect `node` to be expanded')
     if not isinstance(eps, float) or not 0.0 <= eps <= 1.0:
         raise ValueError(f'Expect `eps` to be a float in the range [0.0, 1.0], got {eps}')
-    if not isinstance(alpha, float) or not 0.0 <= alpha <= 1.0:
-        raise ValueError(f'Expect `alpha` to be a float in the range [0.0, 1.0], got {alpha}')
+    if not isinstance(alpha, float) or not 0.0 < alpha <= 1.0:
+        raise ValueError(f'Expect `alpha` to be a float in the range (0.0, 1.0], got {alpha}')
 
-    alphas = np.ones_like(legal_actions) * alpha
-    noise = legal_actions * np.random.dirichlet(alphas)
+    legal = np.asarray(legal_actions) == 1
+    if not np.any(legal):
+        raise ValueError('Expect at least one legal action')
+    noise = np.zeros(node.num_actions, dtype=np.float64)
+    noise[legal] = np.random.dirichlet(np.full(np.count_nonzero(legal), alpha))
 
-    node.child_P = node.child_P * (1 - eps) + noise * eps
+    priors = np.where(legal, node.child_P, 0.0)
+    total = priors.sum()
+    priors = priors / total if total > 0 else legal / np.count_nonzero(legal)
+    node.child_P = priors * (1 - eps) + noise * eps
 
 
 def generate_search_policy(child_N: np.ndarray, temperature: float, legal_actions: np.ndarray) -> np.ndarray:
@@ -282,11 +289,14 @@ def generate_search_policy(child_N: np.ndarray, temperature: float, legal_action
     if not isinstance(temperature, float) or not 0 < temperature <= 1.0:
         raise ValueError(f'Expect `temperature` to be float type in the range (0.0, 1.0], got {temperature}')
 
-    child_N = legal_actions * child_N
+    child_N = np.where(legal_actions == 1, child_N, 0).astype(np.float64)
 
     if temperature > 0.0:
-        # Simple hack to avoid overflow when call np.power over large numbers
+        # Scaling first preserves the probability ratios without overflowing.
         exp = max(1.0, min(5.0, 1.0 / temperature))
+        maximum = np.max(child_N)
+        if maximum > 0:
+            child_N /= maximum
         child_N = np.power(child_N, exp)
 
     assert np.all(child_N >= 0) and not np.any(np.isnan(child_N))
@@ -355,8 +365,7 @@ def uct_search(
     """
     if not isinstance(env, BoardGameEnv):
         raise ValueError(f'Expect `env` to be a valid BoardGameEnv instance, got {env}')
-    if not 1 <= num_simulations:
-        raise ValueError(f'Expect `num_simulations` to a positive integer, got {num_simulations}')
+    validate_search_count(num_simulations, 'num_simulations')
     if env.is_game_over():
         raise RuntimeError('Game is over.')
 
@@ -375,7 +384,7 @@ def uct_search(
     if root_noise:
         add_dirichlet_noise(root_node, root_legal_actions)
 
-    while root_node.N < num_simulations:
+    while root_node.N < max(2, num_simulations):
         node = root_node
 
         # Make sure do not touch the actual environment.
@@ -428,10 +437,7 @@ def uct_search(
         # Choose the child with most visit count.
         move = np.argmax(root_node.child_N)
     else:
-        # Sample an action
-        # Prevent the agent to select pass move during opening moves
-        while move is None or (warm_up and env.has_pass_move and move == env.pass_move) or root_legal_actions[move] != 1:
-            move = np.random.choice(np.arange(search_pi.shape[0]), p=search_pi)
+        move = sample_move(search_pi, root_legal_actions, env.pass_move if warm_up and env.has_pass_move else None)
 
     if move in root_node.children:
         next_root_node = root_node.children[move]
@@ -545,8 +551,8 @@ def parallel_uct_search(
     """
     if not isinstance(env, BoardGameEnv):
         raise ValueError(f'Expect `env` to be a valid BoardGameEnv instance, got {env}')
-    if not 1 <= num_simulations:
-        raise ValueError(f'Expect `num_simulations` to a positive integer, got {num_simulations}')
+    validate_search_count(num_parallel, 'num_parallel')
+    validate_search_count(num_simulations, 'num_simulations')
     if env.is_game_over():
         raise RuntimeError('Game is over.')
 
@@ -569,60 +575,65 @@ def parallel_uct_search(
         leaves = []
         failsafe = 0
 
-        while len(leaves) < num_parallel and failsafe < num_parallel * 2:
-            # This is necessary as when a game is over no leaf is added to leaves,
-            # as we use the actual game results to update statistic
-            failsafe += 1
-            node = root_node
+        try:
+            while len(leaves) < num_parallel and failsafe < num_parallel * 2:
+                # This is necessary as when a game is over no leaf is added to leaves,
+                # as we use the actual game results to update statistic
+                failsafe += 1
+                node = root_node
 
-            # Make sure do not touch the actual environment.
-            sim_env = copy.deepcopy(env)
-            obs = sim_env.observation()
-            done = sim_env.is_game_over()
+                # Make sure do not touch the actual environment.
+                sim_env = copy.deepcopy(env)
+                obs = sim_env.observation()
+                done = sim_env.is_game_over()
 
-            # Phase 1 - Select
-            # Select best child node until one of the following is true:
-            # - reach a leaf node.
-            # - game is over.
-            while node.is_expanded:
-                # Select the best move and create the child node on demand
-                node = best_child(
-                    node,
-                    sim_env.legal_actions,
-                    c_puct_base,
-                    c_puct_init,
-                    sim_env.opponent_player,
-                )
-                # Make move on the simulation environment.
-                obs, reward, done, _ = sim_env.step(node.move)
+                # Phase 1 - Select
+                # Select best child node until one of the following is true:
+                # - reach a leaf node.
+                # - game is over.
+                while node.is_expanded:
+                    # Select the best move and create the child node on demand
+                    node = best_child(
+                        node,
+                        sim_env.legal_actions,
+                        c_puct_base,
+                        c_puct_init,
+                        sim_env.opponent_player,
+                    )
+                    # Make move on the simulation environment.
+                    obs, reward, done, _ = sim_env.step(node.move)
+                    if done:
+                        break
+
+                assert node.to_play == sim_env.to_play
+
+                # Special case - If game is over, using the actual reward from the game to update statistics.
                 if done:
-                    break
-
-            assert node.to_play == sim_env.to_play
-
-            # Special case - If game is over, using the actual reward from the game to update statistics.
-            if done:
-                # The reward is for the last player who made the move won/loss the game.
-                assert node.to_play != sim_env.last_player
-                backup(node, -reward)
-                continue
-            else:
-                add_virtual_loss(node)
-                leaves.append((node, obs))
-        if leaves:
-            batched_nodes, batched_obs = map(list, zip(*leaves))
-            prior_probs, values = eval_func(np.stack(batched_obs, axis=0), True)
-
-            for leaf, prior_prob, value in zip(batched_nodes, prior_probs, values):
-                revert_virtual_loss(leaf)
-
-                # If a node was picked multiple times (despite virtual losses), we shouldn't
-                # expand it more than once.
-                if leaf.is_expanded:
+                    # The reward is for the last player who made the move won/loss the game.
+                    assert node.to_play != sim_env.last_player
+                    backup(node, -reward)
                     continue
+                else:
+                    add_virtual_loss(node)
+                    leaves.append((node, obs))
+            if leaves:
+                batched_nodes, batched_obs = map(list, zip(*leaves))
+                prior_probs, values = eval_func(np.stack(batched_obs, axis=0), True)
+                prior_probs, values = list(prior_probs), list(values)
+                if len(prior_probs) != len(leaves) or len(values) != len(leaves):
+                    raise ValueError('Evaluation batch size does not match the selected leaves')
 
-                expand(leaf, prior_prob)
-                backup(leaf, value)
+                for leaf, prior_prob, value in zip(batched_nodes, prior_probs, values):
+                    # If a node was picked multiple times (despite virtual losses), we shouldn't
+                    # expand it more than once.
+                    if leaf.is_expanded:
+                        continue
+
+                    expand(leaf, prior_prob)
+                    backup(leaf, value)
+        finally:
+            for entry in leaves:
+                revert_virtual_loss(entry[0])
 
     # Play - generate search policy action probability from the root node's child visit number.
     search_pi = generate_search_policy(root_node.child_N, 1.0 if warm_up else 0.1, root_legal_actions)
@@ -635,10 +646,7 @@ def parallel_uct_search(
         # Choose the child with most visit count.
         move = np.argmax(root_node.child_N)
     else:
-        # Sample an action
-        # Prevent the agent to select pass move during opening moves
-        while move is None or (warm_up and env.has_pass_move and move == env.pass_move) or root_legal_actions[move] != 1:
-            move = np.random.choice(np.arange(search_pi.shape[0]), p=search_pi)
+        move = sample_move(search_pi, root_legal_actions, env.pass_move if warm_up and env.has_pass_move else None)
 
     if move in root_node.children:
         next_root_node = root_node.children[move]

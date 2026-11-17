@@ -42,6 +42,7 @@ from typing import Callable, Tuple, Mapping, Iterable, Any
 import numpy as np
 
 from alpha_zero.envs.base import BoardGameEnv
+from alpha_zero.core.mcts_utils import sample_move, validate_search_count
 
 
 class Node:
@@ -308,14 +309,14 @@ def uct_search(
     """
     if not isinstance(env, BoardGameEnv):
         raise ValueError(f'Expect `env` to be a valid BoardGameEnv instance, got {env}')
-    if not 1 <= num_simulations:
-        raise ValueError(f'Expect `num_simulations` to a positive integer, got {num_simulations}')
+    validate_search_count(num_simulations, 'num_simulations')
     if env.is_game_over():
         raise RuntimeError('Game is over.')
 
     # Create root node
     if root_node is None:
         root_node = Node(to_play=env.to_play, parent=None)
+    if not root_node.is_expanded:
         prior_prob, value = eval_func(env.observation(), False)
         expand(root_node, prior_prob, env.opponent_player)
         backup(root_node, value)
@@ -326,13 +327,13 @@ def uct_search(
     if root_noise:
         add_dirichlet_noise(root_node, root_legal_actions)
 
-    while root_node.N < num_simulations:
+    while root_node.N < max(2, num_simulations):
         node = root_node
 
         # Make sure do not touch the actual environment.
         sim_env = copy.deepcopy(env)
         obs = sim_env.observation()
-        done = sim_env.is_game_over
+        done = sim_env.is_game_over()
 
         # Phase 1 - Select
         # Select best child node until one of the following is true:
@@ -374,10 +375,7 @@ def uct_search(
         # Choose the child with most visit count.
         move = np.argmax(root_node.child_N)
     else:
-        # Sample an action
-        # Prevent the agent to select pass move during opening moves
-        while move is None or (warm_up and env.has_pass_move and move == env.pass_move) or root_legal_actions[move] != 1:
-            move = np.random.choice(np.arange(search_pi.shape[0]), p=search_pi)
+        move = sample_move(search_pi, root_legal_actions, env.pass_move if warm_up and env.has_pass_move else None)
 
     next_root_node = root_node.children[move]
     next_root_node.parent = None
@@ -484,14 +482,15 @@ def parallel_uct_search(
     """
     if not isinstance(env, BoardGameEnv):
         raise ValueError(f'Expect `env` to be a valid BoardGameEnv instance, got {env}')
-    if not 1 <= num_simulations:
-        raise ValueError(f'Expect `num_simulations` to a positive integer, got {num_simulations}')
+    validate_search_count(num_parallel, 'num_parallel')
+    validate_search_count(num_simulations, 'num_simulations')
     if env.is_game_over():
         raise RuntimeError('Game is over.')
 
     # Create root node
     if root_node is None:
         root_node = Node(to_play=env.to_play, parent=None)
+    if not root_node.is_expanded:
         prior_prob, value = eval_func(env.observation(), False)
         expand(root_node, prior_prob, env.opponent_player)
         backup(root_node, value)
@@ -506,56 +505,61 @@ def parallel_uct_search(
         leaves = []
         failsafe = 0
 
-        while len(leaves) < num_parallel and failsafe < num_parallel * 2:
-            # This is necessary as when a game is over no leaf is added to leaves,
-            # as we use the actual game results to update statistic
-            failsafe += 1
-            node = root_node
+        try:
+            while len(leaves) < num_parallel and failsafe < num_parallel * 2:
+                # This is necessary as when a game is over no leaf is added to leaves,
+                # as we use the actual game results to update statistic
+                failsafe += 1
+                node = root_node
 
-            # Make sure do not touch the actual environment.
-            sim_env = copy.deepcopy(env)
-            obs = sim_env.observation()
-            done = sim_env.is_game_over
+                # Make sure do not touch the actual environment.
+                sim_env = copy.deepcopy(env)
+                obs = sim_env.observation()
+                done = sim_env.is_game_over()
 
-            # Phase 1 - Select
-            # Select best child node until one of the following is true:
-            # - reach a leaf node.
-            # - game is over.
-            while node.is_expanded:
-                node = best_child(node, sim_env.legal_actions, c_puct_base, c_puct_init)
-                # Make move on the simulation environment.
-                obs, reward, done, _ = sim_env.step(node.move)
+                # Phase 1 - Select
+                # Select best child node until one of the following is true:
+                # - reach a leaf node.
+                # - game is over.
+                while node.is_expanded:
+                    node = best_child(node, sim_env.legal_actions, c_puct_base, c_puct_init)
+                    # Make move on the simulation environment.
+                    obs, reward, done, _ = sim_env.step(node.move)
+                    if done:
+                        break
+
+                # assert node.to_play == sim_env.to_play
+
+                # Special case - If game is over, using the actual reward from the game to update statistics.
                 if done:
-                    break
-
-            # assert node.to_play == sim_env.to_play
-
-            # Special case - If game is over, using the actual reward from the game to update statistics.
-            if done:
-                # The reward is for the last player who made the move won/loss the game.
-                # So when backing up value from node represents current player, we add a minus sign
-                assert node.to_play != sim_env.last_player
-                backup(node, -reward)
-                continue
-            else:
-                add_virtual_loss(node)
-                leaves.append((node, obs, sim_env.opponent_player))
-
-        if leaves:
-            batched_nodes, batched_obs, batched_opponent_player = map(list, zip(*leaves))
-            prior_probs, values = eval_func(np.stack(batched_obs, axis=0), True)
-
-            for leaf, prior_prob, value, opponent_player in zip(batched_nodes, prior_probs, values, batched_opponent_player):
-                revert_virtual_loss(leaf)
-
-                # If a node was picked multiple times (despite virtual losses), we shouldn't
-                # expand it more than once.
-                if leaf.is_expanded:
+                    # The reward is for the last player who made the move won/loss the game.
+                    # So when backing up value from node represents current player, we add a minus sign
+                    assert node.to_play != sim_env.last_player
+                    backup(node, -reward)
                     continue
+                else:
+                    add_virtual_loss(node)
+                    leaves.append((node, obs, sim_env.opponent_player))
 
-                # Children nodes are evaluated from opponent player's perspective.
-                expand(leaf, prior_prob, opponent_player)
-                backup(leaf, value)
+            if leaves:
+                batched_nodes, batched_obs, batched_opponent_player = map(list, zip(*leaves))
+                prior_probs, values = eval_func(np.stack(batched_obs, axis=0), True)
+                prior_probs, values = list(prior_probs), list(values)
+                if len(prior_probs) != len(leaves) or len(values) != len(leaves):
+                    raise ValueError('Evaluation batch size does not match the selected leaves')
+
+                for leaf, prior_prob, value, opponent_player in zip(batched_nodes, prior_probs, values, batched_opponent_player):
+                    # If a node was picked multiple times (despite virtual losses), we shouldn't
+                    # expand it more than once.
+                    if leaf.is_expanded:
+                        continue
+
+                    # Children nodes are evaluated from opponent player's perspective.
+                    expand(leaf, prior_prob, opponent_player)
+                    backup(leaf, value)
+        finally:
+            for entry in leaves:
+                revert_virtual_loss(entry[0])
 
     # Play - generate action probability from the root node.
     search_pi = generate_search_policy(root_node.child_N, 1.0 if warm_up else 0.1)
@@ -568,10 +572,7 @@ def parallel_uct_search(
         # Choose the child with most visit count.
         move = np.argmax(root_node.child_N)
     else:
-        # Sample an action
-        # Prevent the agent to select pass move during opening moves
-        while move is None or (warm_up and env.has_pass_move and move == env.pass_move) or root_legal_actions[move] != 1:
-            move = np.random.choice(np.arange(search_pi.shape[0]), p=search_pi)
+        move = sample_move(search_pi, root_legal_actions, env.pass_move if warm_up and env.has_pass_move else None)
 
     next_root_node = root_node.children[move]
     next_root_node.parent = None

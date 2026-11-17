@@ -280,7 +280,7 @@ class BoardGameEnv(gym.Env):
         if not self.has_resign_move:
             return False
 
-        return move == self.has_resign_move
+        return move == self.resign_move
 
     def is_legal_move(self, move: int) -> bool:
         """Returns bool state to indicate given move is valid or not."""

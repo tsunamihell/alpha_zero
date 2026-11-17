@@ -8,7 +8,6 @@
 
 from typing import Mapping, Text, Any, NamedTuple, Optional, Sequence
 import numpy as np
-import snappy
 
 
 class Transition(NamedTuple):
@@ -22,11 +21,15 @@ TransitionStructure = Transition(state=None, pi_prob=None, value=None)
 
 def compress_array(array):
     """Compresses a numpy array with snappy."""
+    import snappy
+
     return snappy.compress(array), array.shape, array.dtype
 
 
 def uncompress_array(compressed):
     """Uncompresses a numpy array with snappy given its shape and dtype."""
+    import snappy
+
     compressed_array, shape, dtype = compressed
     byte_string = snappy.uncompress(compressed_array)
     return np.frombuffer(byte_string, dtype=dtype).reshape(shape)
@@ -101,14 +104,20 @@ class UniformReplay:
         return {
             'num_games_added': self.num_games_added,
             'num_samples_added': self.num_samples_added,
+            'compress_data': self.compress_data,
             'storage': self.storage,
         }
 
     def set_state(self, state: Mapping[Text, Any]) -> None:
         """Sets replay state from a (potentially de-serialized) dictionary."""
+        storage = state['storage']
+        if len(storage) != self.capacity:
+            raise ValueError(f'Replay capacity mismatch: expected {self.capacity}, got {len(storage)}')
+        if 'compress_data' in state and state['compress_data'] != self.compress_data:
+            raise ValueError('Replay compression setting does not match saved state')
         self.num_games_added = state['num_games_added']
         self.num_samples_added = state['num_samples_added']
-        self.storage = state['storage']
+        self.storage = storage
 
     @property
     def size(self) -> int:

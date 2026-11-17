@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "AlphaZero Chess Bot (Lc0 + Stockfish)",
+  "version": "3.0.0",
+  "description": "Anti-ban humanized chess bot: Lc0 GPU + Stockfish 19 CPU hybrid engine on Chess.com and Lichess.",
+  "permissions": [
+    "storage",
+    "debugger",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.chess.com/*",
+    "*://*.lichess.org/*",
+    "http://127.0.0.1:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AlphaZero Chess Bot"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.chess.com/*",
+        "*://*.lichess.org/*"
+      ],
+      "js": ["humanizer.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.chess.com/*",
+        "*://*.lichess.org/*"
+      ],
+      "js": ["main_world_hook.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
+  ]
+}

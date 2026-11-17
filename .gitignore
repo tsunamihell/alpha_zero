@@ -1,15 +1,37 @@
-# Mac/OSX
+# Mac/OSX / Windows
 .DS_Store
+Thumbs.db
+Desktop.ini
 
+# Python / Environments
 __pycache__/
 *.py[cod]
 *$py.class
 .Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
 
-.vscode
+# IDE
+.vscode/
+.idea/
+*.swp
 
+# Logs & temp
 nohup.out
+*.log
 
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Large Binaries, Models and Executables (Lc0, Stockfish, CUDA DLLs)
+*.exe
+*.dll
+*.pyd
+*.pb.gz
+*.pb
+*.bin

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 250px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #262421;
+      color: #fff;
+    }
+    h3 {
+      margin-top: 0;
+      font-size: 16px;
+      color: #81b64c;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status {
+      padding: 8px 12px;
+      border-radius: 6px;
+      background: #363431;
+      font-size: 13px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .badge {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #fa412d;
+    }
+    .badge.connected {
+      background: #81b64c;
+    }
+    .info {
+      font-size: 12px;
+      color: #aaa;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h3>♟️ AlphaZero Bot</h3>
+  <div class="status">
+    <span>Engine Status:</span>
+    <div id="statusBadge" class="badge"></div>
+  </div>
+  <div class="info">
+    Navigate to <b>Chess.com</b> or <b>Lichess.org</b>. A control panel will appear directly on top of the chessboard to toggle Auto-Play, Hint arrows, and move speeds.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
