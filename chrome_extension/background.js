@@ -1,4 +1,18 @@
-const SERVER_URL = "http://127.0.0.1:5000";
+let SERVER_URL = "http://127.0.0.1:5000";
+
+function updateServerUrl() {
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get({ serverUrl: "http://127.0.0.1:5000" }, (items) => {
+      if (items && items.serverUrl) SERVER_URL = items.serverUrl;
+    });
+  }
+}
+updateServerUrl();
+if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes && changes.serverUrl) SERVER_URL = changes.serverUrl.newValue;
+  });
+}
 const attachedTabs = new Set();
 const ALLOWED_EVENTS = new Set(["mouseMoved", "mousePressed", "mouseReleased"]);
 

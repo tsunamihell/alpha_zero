@@ -250,9 +250,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 def main():
     global engine
+    host = os.environ.get("BRIDGE_HOST", "0.0.0.0")
     print("=" * 60)
     print("  🚀 AlphaZero (Lc0) Bridge Server with Adjustable Strength")
-    print(f"  Listening on http://127.0.0.1:{PORT}")
+    print(f"  Listening on http://{host}:{PORT} (Local & Network)")
     print("  Difficulty Levels: 1 (Beginner ~1000) to 8 (Centaur God 3800+)")
     print("=" * 60)
 
@@ -269,7 +270,8 @@ def main():
     engine = HybridChessEngine(chosen_net)
     print("[*] Engine ready! Awaiting moves from Extension or Client...\n")
 
-    server = HTTPServer(("127.0.0.1", PORT), BridgeHandler)
+    host = os.environ.get("BRIDGE_HOST", "0.0.0.0")
+    server = HTTPServer((host, PORT), BridgeHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
